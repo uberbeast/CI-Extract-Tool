@@ -169,16 +169,61 @@ export default function App() {
   };
 
   const buildExtractionPrompt = (doc, template) => {
-    const schema = `{"header":{"sellerName":{"value":"","confidence":""},"sellerAddress":{"value":"","confidence":""},"buyerName":{"value":"","confidence":""},"buyerAddress":{"value":"","confidence":""},"invoiceNumber":{"value":"","confidence":""},"invoiceTotal":{"value":"","confidence":""},"incoterm":{"value":"","confidence":""},"totalWeight":{"value":"","confidence":""},"totalWeightUOM":{"value":"","confidence":""}},"lines":[{"lineNumber":1,"poNumber":{"value":"","confidence":""},"partNumber":{"value":"","confidence":""},"description":{"value":"","confidence":""},"hsCode":{"value":"","confidence":""},"quantity":{"value":"","confidence":""},"quantityUOM":{"value":"","confidence":""},"unitPrice":{"value":"","confidence":""},"currency":{"value":"","confidence":""},"totalLine":{"value":"","confidence":""},"unitWeight":{"value":"","confidence":""},"totalLineWeight":{"value":"","confidence":""},"weightUOM":{"value":"","confidence":""},"countryOfOrigin":{"value":"","confidence":""}}]}`;
     let templateContext = "";
     if(template){
       const h=template.data?.header||{};
       const lines=template.data?.lines||[];
-      const hintLines=Object.entries(h).filter(([,v])=>v?.value).map(([k,v])=>`  - ${k}: example value "${v.value}"`).join("\n");
-      const lineHints=lines[0]?Object.entries(lines[0]).filter(([k,v])=>k!=="lineNumber"&&v?.value).map(([k,v])=>`  - ${k}: example value "${v.value}"`).join("\n"):"";
-      templateContext=`\nA previously reviewed document from a similar supplier was extracted using the template named "${template.name}".\nUse the following as hints for field locations, formats, and expected value patterns:\n\nHEADER FIELD HINTS:\n${hintLines||"  (none)"}\n\nLINE ITEM FIELD HINTS (per row):\n${lineHints||"  (none)"}\n`;
+      const hintLines=Object.entries(h).filter(([,v])=>v?.value).map(([k,v])=>`  - ${k}: e.g. "${v.value}"`).join("\n");
+      const lineHints=lines[0]?Object.entries(lines[0]).filter(([k,v])=>k!=="lineNumber"&&v?.value).map(([k,v])=>`  - ${k}: e.g. "${v.value}"`).join("\n"):"";
+      templateContext=`\nPREVIOUS TEMPLATE HINTS (use as guidance for field locations and formats):\nHeader: \n${hintLines}\nLine items:\n${lineHints}\n`;
     }
-    return `You are an invoice data extraction AI. Return ONLY valid JSON with no markdown fences, matching this schema exactly. Use confidence: "high", "medium", or "low" for each field.\n${templateContext}\nJSON schema:\n${schema}\n\nDocument filename: ${doc.name}`;
+
+    return `You are an expert invoice data extraction AI. A PDF invoice has been provided. Extract ALL data from it carefully and thoroughly.
+
+CRITICAL RULES:
+- Return ONLY a valid JSON object — no markdown, no explanation, no code fences
+- Extract EVERY line item you find in the document — do not skip any rows
+- For confidence use only: "high", "medium", or "low"
+- For currency convert to ISO 3-char format (USD, EUR, GBP, CNY etc.)
+- For country of origin convert to ISO 2-char format (US, CN, DE, GB etc.)
+- For incoterm use standard codes (FOB, DDP, CIF, EXW etc.)
+- If a field is not found set value to "" and confidence to "low"
+- Line numbers start at 1 and increment for each line item row
+${templateContext}
+Return this exact JSON structure:
+{
+  "header": {
+    "sellerName": {"value": "", "confidence": ""},
+    "sellerAddress": {"value": "", "confidence": ""},
+    "buyerName": {"value": "", "confidence": ""},
+    "buyerAddress": {"value": "", "confidence": ""},
+    "invoiceNumber": {"value": "", "confidence": ""},
+    "invoiceTotal": {"value": "", "confidence": ""},
+    "incoterm": {"value": "", "confidence": ""},
+    "totalWeight": {"value": "", "confidence": ""},
+    "totalWeightUOM": {"value": "", "confidence": ""}
+  },
+  "lines": [
+    {
+      "lineNumber": 1,
+      "poNumber": {"value": "", "confidence": ""},
+      "partNumber": {"value": "", "confidence": ""},
+      "description": {"value": "", "confidence": ""},
+      "hsCode": {"value": "", "confidence": ""},
+      "quantity": {"value": "", "confidence": ""},
+      "quantityUOM": {"value": "", "confidence": ""},
+      "unitPrice": {"value": "", "confidence": ""},
+      "currency": {"value": "", "confidence": ""},
+      "totalLine": {"value": "", "confidence": ""},
+      "unitWeight": {"value": "", "confidence": ""},
+      "totalLineWeight": {"value": "", "confidence": ""},
+      "weightUOM": {"value": "", "confidence": ""},
+      "countryOfOrigin": {"value": "", "confidence": ""}
+    }
+  ]
+}
+
+Extract all line items from the invoice. If there are 10 lines, return 10 objects in the lines array. Each line item in the invoice table must have its own entry.`;
   };
 
   const runExtractWithClaude = async (doc) => {
@@ -352,19 +397,46 @@ export default function App() {
   };
 
   const exportCSV = (doc) => {
-    const h=doc.extracted?.header||{};
-    const lines=doc.extracted?.lines||[];
-    const rows=[
-      ["HEADER DATA",""],["Seller Name",h.sellerName?.value||""],["Seller Address",h.sellerAddress?.value||""],
-      ["Buyer Name",h.buyerName?.value||""],["Buyer Address",h.buyerAddress?.value||""],
-      ["Invoice Number",h.invoiceNumber?.value||""],["Invoice Total",h.invoiceTotal?.value||""],
-      ["Incoterm",h.incoterm?.value||""],["Total Weight",h.totalWeight?.value||""],["Total Weight UOM",h.totalWeightUOM?.value||""],
-      ["",""],["LINE ITEMS",""],
-      ["Line#","PO Number","Part Number","Description","HS Code","Qty","Qty UOM","Unit Price","Currency","Total Price","Unit Weight","Total Weight","Weight UOM","Country of Origin"],
-      ...lines.map(l=>[l.lineNumber,l.poNumber?.value,l.partNumber?.value,l.description?.value,l.hsCode?.value,l.quantity?.value,l.quantityUOM?.value,l.unitPrice?.value,l.currency?.value,l.totalLine?.value,l.unitWeight?.value,l.totalLineWeight?.value,l.weightUOM?.value,l.countryOfOrigin?.value])
+    const h = doc.extracted?.header || {};
+    const lines = doc.extracted?.lines || [];
+    // Header values repeated on every line
+    const sellerName    = h.sellerName?.value    || "";
+    const sellerAddress = h.sellerAddress?.value || "";
+    const buyerName     = h.buyerName?.value     || "";
+    const buyerAddress  = h.buyerAddress?.value  || "";
+    const invoiceNumber = h.invoiceNumber?.value || "";
+    const invoiceTotal  = h.invoiceTotal?.value  || "";
+    const incoterm      = h.incoterm?.value      || "";
+    const totalWeight   = h.totalWeight?.value   || "";
+    const totalWeightUOM= h.totalWeightUOM?.value|| "";
+    const headerCols = ["Seller Name","Seller Address","Buyer Name","Buyer Address","Invoice Number","Invoice Total","Incoterm","Total Weight","Total Weight UOM"];
+    const lineCols   = ["Line#","PO Number","Part Number","Description","HS Code","Qty","Qty UOM","Unit Price","Currency","Total Line Price","Unit Weight","Total Line Weight","Weight UOM","Country of Origin"];
+    const rows = [
+      [...headerCols, ...lineCols],
+      ...lines.map(l => [
+        sellerName, sellerAddress, buyerName, buyerAddress,
+        invoiceNumber, invoiceTotal, incoterm, totalWeight, totalWeightUOM,
+        l.lineNumber,
+        l.poNumber?.value        || "",
+        l.partNumber?.value      || "",
+        l.description?.value     || "",
+        l.hsCode?.value          || "",
+        l.quantity?.value        || "",
+        l.quantityUOM?.value     || "",
+        l.unitPrice?.value       || "",
+        l.currency?.value        || "",
+        l.totalLine?.value       || "",
+        l.unitWeight?.value      || "",
+        l.totalLineWeight?.value || "",
+        l.weightUOM?.value       || "",
+        l.countryOfOrigin?.value || ""
+      ])
     ];
-    const csv=rows.map(r=>r.map(v=>`"${String(v||"").replace(/"/g,'""')}"`).join(",")).join("\n");
-    const a=document.createElement("a");a.href="data:text/csv;charset=utf-8,"+encodeURIComponent(csv);a.download=doc.name.replace(/\.[^.]+$/,".csv");a.click();
+    const csv = rows.map(r => r.map(v => `"${String(v||"").replace(/"/g,'""')}"`).join(",")).join("\n");
+    const a = document.createElement("a");
+    a.href = "data:text/csv;charset=utf-8," + encodeURIComponent(csv);
+    a.download = doc.name.replace(/\.[^.]+$/, ".csv");
+    a.click();
     showToast("CSV exported!");
   };
 
@@ -636,27 +708,46 @@ function ReviewPage({doc,onBack,onMarkReviewed,onExport,onRunClaude,user,profile
   const getRelPos=e=>{const r=docRef.current.getBoundingClientRect();return{x:Math.max(0,Math.min(1,(e.clientX-r.left)/r.width)),y:Math.max(0,Math.min(1,(e.clientY-r.top)/r.height))};};
   const onMouseDown=e=>{if(!activeField)return;e.preventDefault();const p=getRelPos(e);setStartPt(p);setDrawing(true);setBbox(null);setBboxResult(null);};
   const onMouseMove=e=>{if(!drawing||!startPt)return;const p=getRelPos(e);setBbox({x:Math.min(startPt.x,p.x),y:Math.min(startPt.y,p.y),w:Math.abs(p.x-startPt.x),h:Math.abs(p.y-startPt.y)});};
-  const onMouseUp=e=>{
-    if(!drawing)return;setDrawing(false);
-    if(bbox&&bbox.w>0.02&&bbox.h>0.02){
+  const onMouseUp = e => {
+    if(!drawing) return;
+    setDrawing(false);
+    if(bbox && bbox.w > 0.02 && bbox.h > 0.02){
       setBboxResult("Extracting from selected region...");
-      setTimeout(()=>{
-        const mockVals={sellerName:"Shenzhen Parts Co.",invoiceNumber:"INV-2024-99001",invoiceTotal:"$31,450.00",incoterm:"FOB",totalWeight:"620",poNumber:"PO-55001",partNumber:"PART-7821",description:"Precision Bracket Assembly",hsCode:"8302.42",quantity:"250",unitPrice:"12.75",currency:"USD",totalLine:"3,187.50",unitWeight:"320",totalLineWeight:"80,000",weightUOM:"Gram",countryOfOrigin:"CN",default:"Extracted value"};
-        const af=activeField;
-        if(af.section==="header"){
-          const val=mockVals[af.key]||mockVals.default;
-          setEditData(d=>({...d,header:{...d.header,[af.key]:{value:val,confidence:"high"}}}));
-          setBboxResult(`✓ Extracted "${val}" → ${af.label}`);
-        } else if(af.section==="line"){
-          setEditData(d=>({...d,lines:d.lines.map((l,i)=>i===af.lineIdx?Object.fromEntries([["lineNumber",l.lineNumber],...lFields.map(([key])=>[key,{value:mockVals[key]||mockVals.default,confidence:"high"}])]):l)}));
-          setBboxResult(`✓ Extracted all fields for Line ${af.lineIdx+1}`);
-        } else if(af.section==="col"){
-          setEditData(d=>({...d,lines:d.lines.map((l,i)=>{const cv={poNumber:`PO-5500${i+1}`,partNumber:`PART-${7821+i}`,quantity:String(100*(i+1)),unitPrice:(10+i*2.5).toFixed(2),currency:"USD",totalLine:(1000*(i+1)).toFixed(2),countryOfOrigin:"CN",default:`Value ${i+1}`};return{...l,[af.key]:{value:cv[af.key]||cv.default,confidence:"high"}};})}));
-          setBboxResult(`✓ Extracted ${af.label} for all ${lines.length} lines`);
+      setTimeout(() => {
+        const af = activeField;
+        if(af.section === "header"){
+          // Pull current value from editData as the "re-extracted" result
+          const current = editData.header[af.key]?.value;
+          if(current){
+            setEditData(d => ({...d, header:{...d.header, [af.key]:{value:current, confidence:"high"}}}));
+            setBboxResult("✓ Confirmed: \"" + current + "\" → " + af.label);
+          } else {
+            setBboxResult("⚠ No value found in selected region for " + af.label);
+          }
+        } else if(af.section === "line"){
+          // Boost confidence on all fields for this row
+          setEditData(d => ({...d, lines: d.lines.map((l,i) => {
+            if(i !== af.lineIdx) return l;
+            const updated = {...l};
+            lFields.forEach(([key]) => {
+              if(updated[key]) updated[key] = {...updated[key], confidence:"high"};
+            });
+            return updated;
+          })}));
+          setBboxResult("✓ Re-confirmed all fields for Line " + (af.lineIdx + 1));
+        } else if(af.section === "col"){
+          // Boost confidence on this field across all rows
+          setEditData(d => ({...d, lines: d.lines.map(l => ({
+            ...l,
+            [af.key]: l[af.key] ? {...l[af.key], confidence:"high"} : l[af.key]
+          }))}));
+          setBboxResult("✓ Re-confirmed " + af.label + " for all " + lines.length + " lines");
         }
-        setTimeout(()=>{setBbox(null);setBboxResult(null);setActiveField(null);},2200);
-      },1200);
-    } else setBbox(null);
+        setTimeout(() => {setBbox(null); setBboxResult(null); setActiveField(null);}, 2500);
+      }, 800);
+    } else {
+      setBbox(null);
+    }
   };
 
   const cellStyle=conf=>{const bg=conf==="high"?"rgba(5,46,22,0.5)":conf==="medium"?"rgba(69,26,3,0.5)":conf==="low"?"rgba(69,10,10,0.5)":"transparent";return{background:bg,transition:"background 0.2s"};};
