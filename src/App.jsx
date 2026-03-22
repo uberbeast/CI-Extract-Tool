@@ -146,12 +146,15 @@ export default function App() {
 
   const signup = async () => {
     if(!loginData.email||!loginData.password||!loginData.name){showToast("Fill in all fields","error");return;}
-    const {error} = await supabase.auth.signUp({
+    if(loginData.password.length < 6){showToast("Password must be at least 6 characters","error");return;}
+    showToast("Creating account...","info");
+    const {data,error} = await supabase.auth.signUp({
       email:loginData.email,password:loginData.password,
       options:{data:{name:loginData.name}}
     });
-    if(error) showToast(error.message,"error");
-    else showToast("Check your email to confirm your account!");
+    if(error){showToast(error.message,"error");return;}
+    if(data?.user?.identities?.length===0){showToast("Email already registered — try signing in","error");return;}
+    showToast("Account created! Check your email to confirm, or sign in if confirmation is disabled.");
   };
 
   const resetPassword = async () => {
@@ -343,7 +346,7 @@ export default function App() {
   ];
 
   if(loading) return <div style={{...s.app,display:"flex",alignItems:"center",justifyContent:"center",minHeight:"100vh"}}><div style={{color:COLORS.textMuted,fontSize:14}}>Loading...</div></div>;
-  if(page==="login") return <LoginPage loginData={loginData} setLoginData={setLoginData} onLogin={login} onSignup={signup} onReset={resetPassword}/>;
+  if(page==="login") return <LoginPage loginData={loginData} setLoginData={setLoginData} onLogin={login} onSignup={signup} onReset={resetPassword} toast={toast}/>;
   if(page==="review"&&reviewDoc) return <ReviewPage doc={reviewDoc} onBack={()=>setPage("dashboard")} onMarkReviewed={markReviewed} onExport={exportCSV} onRunClaude={runExtractWithClaude} user={user} profile={profile} templates={savedTemplates} onSaveTemplate={saveTemplate}/>;
 
   return (
@@ -376,12 +379,13 @@ export default function App() {
   );
 }
 
-function LoginPage({loginData,setLoginData,onLogin,onSignup,onReset}){
+function LoginPage({loginData,setLoginData,onLogin,onSignup,onReset,toast}){
   const set=k=>e=>setLoginData(d=>({...d,[k]:e.target.value}));
   const isReset=loginData.mode==="reset";
   const isSignup=loginData.mode==="signup";
   return(
     <div style={{...s.app,display:"flex",alignItems:"center",justifyContent:"center",minHeight:"100vh"}}>
+      {toast&&<div style={{position:"fixed",top:20,right:20,zIndex:999,background:toast.type==="error"?COLORS.danger:toast.type==="info"?COLORS.info:COLORS.success,color:"#fff",padding:"10px 18px",borderRadius:10,fontSize:13,fontWeight:500}}>{toast.msg}</div>}
       <div style={{width:380}}>
         <div style={{textAlign:"center",marginBottom:"2rem"}}>
           <div style={{fontSize:32,marginBottom:8}}>⬡</div>
