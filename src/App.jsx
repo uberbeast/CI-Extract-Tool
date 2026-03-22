@@ -182,39 +182,58 @@ export default function App() {
   };
 
   const runExtractWithClaude = async (doc) => {
-    updateDoc(doc.id,{status:"Processing"});
-    if(reviewDoc?.id===doc.id) setReviewDoc(r=>({...r,status:"Processing"}));
-    const assignedTemplate = savedTemplates.find(t=>t.name===doc.template_name)||null;
-    showToast(assignedTemplate?`Extracting with template "${assignedTemplate.name}"...`:"Extracting document...","info");
+    updateDoc(doc.id, {status:"Processing"});
+    if (reviewDoc?.id === doc.id) setReviewDoc(r => ({...r, status:"Processing"}));
+    const assignedTemplate = savedTemplates.find(t => t.name === doc.template_name) || null;
+    showToast(assignedTemplate ? `Extracting with template "${assignedTemplate.name}"...` : "Extracting document...", "info");
+
     try {
       const prompt = buildExtractionPrompt(doc, assignedTemplate);
-      // Read file from Supabase Storage if available
-      let imageBase64 = null;
-      if(doc.file_path){
-        const {data} = await supabase.storage.from("documents").download(doc.file_path);
-        if(data){
-          const buf = await data.arrayBuffer();
-          imageBase64 = btoa(String.fromCharCode(...new Uint8Array(buf)));
+
+      // Read PDF from Supabase Storage and convert to base64
+      let pdfBase64 = null;
+      if (doc.file_path) {
+        const { data: fileData, error: fileError } = await supabase.storage
+          .from("documents")
+          .download(doc.file_path);
+        if (!fileError && fileData) {
+          const arrayBuf = await fileData.arrayBuffer();
+          const bytes = new Uint8Array(arrayBuf);
+          let binary = "";
+          for (let i = 0; i < bytes.byteLength; i++) {
+            binary += String.fromCharCode(bytes[i]);
+          }
+          pdfBase64 = btoa(binary);
         }
       }
-      const res = await fetch("/api/extract",{
-        method:"POST",
-        headers:{"Content-Type":"application/json"},
-        body:JSON.stringify({prompt, imageBase64})
+
+      const res = await fetch("/api/extract", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({ prompt, pdfBase64 })
       });
+
       const data = await res.json();
-      if(data.error) throw new Error(data.error);
-      const txt = data.content?.map(x=>x.text||"").join("").trim();
+      if (data.error) throw new Error(data.error);
+
+      const txt = data.content?.map(x => x.text || "").join("").trim();
       const parsed = JSON.parse(txt);
-      await supabase.from("documents").update({status:"Need Review",extracted:parsed,lines:parsed.lines?.length||0}).eq("id",doc.id);
-      updateDoc(doc.id,{status:"Need Review",extracted:parsed,lines:parsed.lines?.length||0});
-      if(reviewDoc?.id===doc.id) setReviewDoc(r=>({...r,status:"Need Review",extracted:parsed,lines:parsed.lines?.length||0}));
+
+      await supabase.from("documents").update({
+        status: "Need Review",
+        extracted: parsed,
+        lines: parsed.lines?.length || 0
+      }).eq("id", doc.id);
+
+      updateDoc(doc.id, {status:"Need Review", extracted:parsed, lines:parsed.lines?.length||0});
+      if (reviewDoc?.id === doc.id) setReviewDoc(r => ({...r, status:"Need Review", extracted:parsed, lines:parsed.lines?.length||0}));
       showToast("Extraction complete!");
+
     } catch(err) {
-      await supabase.from("documents").update({status:"Error"}).eq("id",doc.id);
-      updateDoc(doc.id,{status:"Error"});
-      if(reviewDoc?.id===doc.id) setReviewDoc(r=>({...r,status:"Error"}));
-      showToast("Extraction failed: "+err.message,"error");
+      await supabase.from("documents").update({status:"Error"}).eq("id", doc.id);
+      updateDoc(doc.id, {status:"Error"});
+      if (reviewDoc?.id === doc.id) setReviewDoc(r => ({...r, status:"Error"}));
+      showToast("Extraction failed: " + err.message, "error");
     }
   };
 
@@ -554,11 +573,29 @@ function ReviewPage({doc,onBack,onMarkReviewed,onExport,onRunClaude,user,profile
   const [bboxResult,setBboxResult]=useState(null);
   const [pdfPage,setPdfPage]=useState(1);
   const [pdfDataOverride,setPdfDataOverride]=useState(null);
+  const [pdfLoading,setPdfLoading]=useState(false);
   const [showSaveTemplate,setShowSaveTemplate]=useState(false);
   const [showApplyTemplate,setShowApplyTemplate]=useState(false);
   const [templateName,setTemplateName]=useState("");
   const docRef=useRef();
   const pdfCanvasRef=useRef();
+
+  // Auto-load PDF from Supabase Storage on mount
+  useEffect(() => {
+    if (doc.file_path && !pdfDataOverride) {
+      setPdfLoading(true);
+      supabase.storage.from("documents").download(doc.file_path).then(({data, error}) => {
+        if (!error && data) {
+          data.arrayBuffer().then(buf => {
+            setPdfDataOverride(buf);
+            setPdfLoading(false);
+          });
+        } else {
+          setPdfLoading(false);
+        }
+      });
+    }
+  }, [doc.file_path]);
 
   const h=editData.header||{};
   const lines=editData.lines||[];
@@ -687,9 +724,11 @@ function ReviewPage({doc,onBack,onMarkReviewed,onExport,onRunClaude,user,profile
           )}
           {bboxResult&&<div style={{padding:"8px 14px",background:"#052e16",borderBottom:`1px solid #16a34a`,fontSize:12,color:"#4ade80"}}>{bboxResult}</div>}
           <div ref={docRef} style={{flex:1,position:"relative",cursor:activeField?"crosshair":"default",userSelect:"none",overflow:"auto"}} onMouseDown={onMouseDown} onMouseMove={onMouseMove} onMouseUp={onMouseUp}>
-            {(doc.pdfData||pdfDataOverride)?(
+            {(doc.pdfData||pdfDataOverride) ? (
               <PdfViewer pdfData={pdfDataOverride||doc.pdfData} pageNum={pdfPage} canvasRef={pdfCanvasRef}/>
-            ):(
+            ) : pdfLoading ? (
+              <div style={{display:"flex",alignItems:"center",justifyContent:"center",height:"100%",color:COLORS.textMuted,fontSize:13}}>Loading PDF...</div>
+            ) : (
               <div style={{display:"flex",alignItems:"center",justifyContent:"center",height:"100%"}}>
                 <div style={{width:"80%",maxWidth:360,background:COLORS.bgCard,border:`1px solid ${COLORS.border}`,borderRadius:8,padding:"2rem",textAlign:"center"}}>
                   <div style={{fontSize:36,marginBottom:10}}>📄</div>
