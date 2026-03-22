@@ -385,7 +385,7 @@ function LoginPage({loginData,setLoginData,onLogin,onSignup,onReset}){
       <div style={{width:380}}>
         <div style={{textAlign:"center",marginBottom:"2rem"}}>
           <div style={{fontSize:32,marginBottom:8}}>⬡</div>
-          <div style={{fontSize:22,fontWeight:600}}}>InvoiceAI</div>
+          <div style={{fontSize:22,fontWeight:600}}>InvoiceAI</div>
           <div style={{fontSize:14,color:COLORS.textMuted,marginTop:4}}>Document extraction platform</div>
         </div>
         <div style={s.card}>
