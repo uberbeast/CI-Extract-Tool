@@ -741,36 +741,28 @@ function ReviewPage({doc,onBack,onMarkReviewed,onExport,onRunClaude,user,profile
                   <thead>
                     <tr style={{background:"#12141e"}}>
                       <th style={{padding:"7px 10px",fontSize:11,color:COLORS.textMuted,fontWeight:500,textAlign:"left",borderBottom:`1px solid ${COLORS.border}`,whiteSpace:"nowrap"}}>#</th>
-                      {lFields.map(([key,label])=>{
-                        const colActive=activeField?.section==="col"&&activeField?.key===key;
-                        return(
-                          <th key={key} style={{padding:"4px 8px",fontSize:11,color:colActive?COLORS.accent:COLORS.textMuted,fontWeight:500,textAlign:"left",borderBottom:`1px solid ${COLORS.border}`,whiteSpace:"nowrap",background:colActive?"rgba(108,99,255,0.1)":"transparent"}}>
-                            <div style={{display:"flex",alignItems:"center",gap:4}}>
-                              {label}
-                              <span title={`Extract entire ${label} column`} style={{cursor:"pointer",fontSize:12,color:colActive?"#6c63ff":COLORS.textMuted}} onClick={()=>setActiveField(colActive?null:{section:"col",key,label:`${label} (all rows)`)}>⬚</span>
-                            </div>
-                          </th>
-                        );
-                      })}
-                      <th style={{padding:"7px 10px",fontSize:11,color:COLORS.textMuted,fontWeight:500,borderBottom:`1px solid ${COLORS.border}`,textAlign:"center"}}>Row ⬚</th>
+
                     </tr>
                   </thead>
                   <tbody>
-                    {lines.map((line,li)=>{
-                      const rowActive=activeField?.section==="line"&&activeField?.lineIdx===li;
+                    {lines.map(function(line,li){
+                      const rowActive=activeField!=null&&activeField.section==="line"&&activeField.lineIdx===li;
                       return(
-                        <tr key={li} style={{borderBottom:`1px solid ${COLORS.border}`,background:rowActive?"rgba(108,99,255,0.07)":"transparent"}}>
+                        <tr key={li} style={{borderBottom:"1px solid "+COLORS.border,background:rowActive?"rgba(108,99,255,0.07)":"transparent"}}>
                           <td style={{padding:"6px 10px",fontSize:12,color:COLORS.textMuted,verticalAlign:"middle"}}>{line.lineNumber}</td>
-                          {lFields.map(([key])=>{
-                            const colActive=activeField?.section==="col"&&activeField?.key===key;
+                          {lFields.map(function(fieldArr){
+                            const key=fieldArr[0];
+                            const colActive=activeField!=null&&activeField.section==="col"&&activeField.key===key;
+                            const conf=line[key]!=null?line[key].confidence:null;
+                            const bg=conf==="high"?"rgba(5,46,22,0.5)":conf==="medium"?"rgba(69,26,3,0.5)":conf==="low"?"rgba(69,10,10,0.5)":"transparent";
                             return(
-                              <td key={key} style={{padding:"5px 8px",verticalAlign:"middle",background:colActive?"rgba(108,99,255,0.08)":"transparent",...(colActive?{}:cellStyle(line[key]?.confidence))}}>
-                                <input style={{...inputCell,minWidth:60}} value={line[key]?.value||""} onChange={e=>setEditData(d=>({...d,lines:d.lines.map((l,i)=>i===li?{...l,[key]:{...l[key],value:e.target.value}}:l)}))} placeholder="—"/>
+                              <td key={key} style={{padding:"5px 8px",verticalAlign:"middle",background:colActive?"rgba(108,99,255,0.08)":bg}}>
+                                <input style={{background:"transparent",border:"none",color:COLORS.text,fontSize:12,width:"100%",outline:"none",padding:"2px 0",fontFamily:"inherit",minWidth:60}} value={(line[key]&&line[key].value)||""} onChange={function(e){setEditData(function(d){return{...d,lines:d.lines.map(function(l,i){return i===li?{...l,[key]:{...l[key],value:e.target.value}}:l})};})}} placeholder="—"/>
                               </td>
                             );
                           })}
                           <td style={{padding:"5px 10px",verticalAlign:"middle",textAlign:"center"}}>
-                            <span title={`Extract all fields for Line ${line.lineNumber}`} style={{fontSize:14,cursor:"pointer",color:rowActive?"#6c63ff":COLORS.textMuted}} onClick={()=>setActiveField(rowActive?null:{section:"line",key:"_row",label:`Line ${line.lineNumber} (all fields)`,lineIdx:li})}>⬚</span>
+                            <span title={"Extract all fields for Line "+(li+1)} style={{fontSize:14,cursor:"pointer",color:rowActive?"#6c63ff":COLORS.textMuted}} onClick={function(){setActiveField(rowActive?null:{section:"line",key:"_row",label:"Line "+(li+1)+" (all fields)",lineIdx:li})}}>⬚</span>
                           </td>
                         </tr>
                       );
@@ -781,6 +773,124 @@ function ReviewPage({doc,onBack,onMarkReviewed,onExport,onRunClaude,user,profile
             </div>
           )}
         </div>
+      </div>
+    </div>
+  );
+}
+
+function LineItemsTable({ lFields, lines, activeField, setActiveField, setEditData }) {
+  const thBase = {
+    padding: "4px 8px", fontSize: 11, fontWeight: 500,
+    textAlign: "left", whiteSpace: "nowrap",
+    borderBottom: "1px solid " + COLORS.border
+  };
+  const tdInput = {
+    background: "transparent", border: "none", color: COLORS.text,
+    fontSize: 12, width: "100%", outline: "none",
+    padding: "2px 0", fontFamily: "inherit", minWidth: 60
+  };
+  return (
+    <div>
+      <div style={{
+        padding: "10px 14px 6px", fontSize: 11, fontWeight: 600,
+        color: COLORS.textMuted, letterSpacing: 1,
+        borderBottom: "1px solid " + COLORS.border,
+        background: "#12141e", marginTop: 4
+      }}>LINE ITEMS</div>
+      <div style={{ overflowX: "auto" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 900 }}>
+          <thead>
+            <tr style={{ background: "#12141e" }}>
+              <th style={{ ...thBase, padding: "7px 10px", color: COLORS.textMuted }}>#</th>
+              {lFields.map(function(f) {
+                const fKey = f[0];
+                const fLabel = f[1];
+                const isColActive = activeField && activeField.section === "col" && activeField.key === fKey;
+                return (
+                  <th key={fKey} style={{
+                    ...thBase,
+                    color: isColActive ? COLORS.accent : COLORS.textMuted,
+                    background: isColActive ? "rgba(108,99,255,0.1)" : "transparent"
+                  }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                      {fLabel}
+                      <span
+                        title={"Extract entire " + fLabel + " column"}
+                        style={{ cursor: "pointer", fontSize: 12, color: isColActive ? "#6c63ff" : COLORS.textMuted }}
+                        onClick={function() {
+                          setActiveField(isColActive ? null : { section: "col", key: fKey, label: fLabel + " (all rows)" });
+                        }}
+                      >⬚</span>
+                    </div>
+                  </th>
+                );
+              })}
+              <th style={{ ...thBase, padding: "7px 10px", color: COLORS.textMuted, textAlign: "center" }}>Row ⬚</th>
+            </tr>
+          </thead>
+          <tbody>
+            {lines.map(function(line, li) {
+              const isRowActive = activeField && activeField.section === "line" && activeField.lineIdx === li;
+              return (
+                <tr key={li} style={{
+                  borderBottom: "1px solid " + COLORS.border,
+                  background: isRowActive ? "rgba(108,99,255,0.07)" : "transparent"
+                }}>
+                  <td style={{ padding: "6px 10px", fontSize: 12, color: COLORS.textMuted, verticalAlign: "middle" }}>
+                    {line.lineNumber}
+                  </td>
+                  {lFields.map(function(f) {
+                    const fKey = f[0];
+                    const isColActive = activeField && activeField.section === "col" && activeField.key === fKey;
+                    const conf = line[fKey] ? line[fKey].confidence : null;
+                    const confBg = conf === "high" ? "rgba(5,46,22,0.5)"
+                      : conf === "medium" ? "rgba(69,26,3,0.5)"
+                      : conf === "low" ? "rgba(69,10,10,0.5)" : "transparent";
+                    return (
+                      <td key={fKey} style={{
+                        padding: "5px 8px", verticalAlign: "middle",
+                        background: isColActive ? "rgba(108,99,255,0.08)" : confBg
+                      }}>
+                        <input
+                          style={tdInput}
+                          value={line[fKey] ? line[fKey].value || "" : ""}
+                          onChange={function(e) {
+                            var val = e.target.value;
+                            setEditData(function(d) {
+                              return {
+                                ...d,
+                                lines: d.lines.map(function(l, i) {
+                                  if (i !== li) return l;
+                                  var updated = {};
+                                  Object.assign(updated, l);
+                                  updated[fKey] = { value: val, confidence: l[fKey] ? l[fKey].confidence : "high" };
+                                  return updated;
+                                })
+                              };
+                            });
+                          }}
+                          placeholder="—"
+                        />
+                      </td>
+                    );
+                  })}
+                  <td style={{ padding: "5px 10px", verticalAlign: "middle", textAlign: "center" }}>
+                    <span
+                      title={"Extract all fields for Line " + (li + 1)}
+                      style={{ fontSize: 14, cursor: "pointer", color: isRowActive ? "#6c63ff" : COLORS.textMuted }}
+                      onClick={function() {
+                        setActiveField(isRowActive ? null : {
+                          section: "line", key: "_row",
+                          label: "Line " + (li + 1) + " (all fields)", lineIdx: li
+                        });
+                      }}
+                    >⬚</span>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
       </div>
     </div>
   );
