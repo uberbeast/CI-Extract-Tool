@@ -268,28 +268,55 @@ export default function App() {
 
   const beginExtraction = async () => {
     if(!uploadQueue.length) return;
-    const today=new Date().toISOString().split("T")[0];
+    const today = new Date().toISOString().split("T")[0];
     for(const q of uploadQueue){
       let filePath = null;
+
       // Upload file to Supabase Storage
       if(q.file){
-        const ext=q.name.split(".").pop();
-        const path=`${user.id}/${Date.now()}_${q.name}`;
-        const {data,error} = await supabase.storage.from("documents").upload(path,q.file);
-        if(!error) filePath=data.path;
+        const ext = q.name.split(".").pop();
+        const safeName = q.name.replace(/[^a-zA-Z0-9._-]/g, "_");
+        const path = user.id + "/" + Date.now() + "_" + safeName;
+        console.log("Uploading file to storage:", path, "size:", q.file.size);
+
+        const { data: uploadData, error: uploadError } = await supabase.storage
+          .from("documents")
+          .upload(path, q.file, { upsert: false, contentType: q.file.type || "application/octet-stream" });
+
+        if(uploadError){
+          console.error("Storage upload error:", uploadError);
+          showToast("File upload failed: " + uploadError.message, "error");
+        } else {
+          filePath = uploadData.path;
+          console.log("File uploaded successfully:", filePath);
+        }
       }
-      const {data:doc} = await supabase.from("documents").insert({
-        user_id:user.id,name:q.name,status:"Queued",uploaded_at:today,
-        file_type:q.type,pages:1,lines:0,extracted:null,
-        template_name:q.template!=="None"?q.template:null,
-        uploaded_by:profile?.name||user.email,
-        file_path:filePath
+
+      const { data: doc, error: docError } = await supabase.from("documents").insert({
+        user_id: user.id,
+        name: q.name,
+        status: "Queued",
+        uploaded_at: today,
+        file_type: q.type,
+        pages: 1,
+        lines: 0,
+        extracted: null,
+        template_name: q.template !== "None" ? q.template : null,
+        uploaded_by: profile?.name || user.email,
+        file_path: filePath
       }).select().single();
-      if(doc) setDocs(d=>[{...doc,uploaded:doc.uploaded_at,type:doc.file_type,uploadedBy:doc.uploaded_by},...d]);
+
+      if(docError){
+        console.error("Document insert error:", docError);
+        showToast("Failed to save document record: " + docError.message, "error");
+      } else if(doc) {
+        console.log("Document record created:", doc.id, "file_path:", doc.file_path);
+        setDocs(d => [{...doc, uploaded:doc.uploaded_at, type:doc.file_type, uploadedBy:doc.uploaded_by}, ...d]);
+      }
     }
     setUploadQueue([]);
     setPage("dashboard");
-    showToast(`${uploadQueue.length} document(s) queued`);
+    showToast(uploadQueue.length + " document(s) queued");
   };
 
   const deleteDoc = async (id) => {
