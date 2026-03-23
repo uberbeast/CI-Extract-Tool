@@ -103,7 +103,7 @@ export default function App() {
   const [loading,setLoading]             = useState(true);
   const pageSize = 50;
 
-  const showToast = (msg, type="success") => { setToast({msg,type}); setTimeout(()=>setToast(null),3500); };
+  const showToast = (msg, type="success", duration=4000) => { setToast({msg,type}); setTimeout(()=>setToast(null),duration); };
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data:{ session } }) => {
@@ -261,10 +261,11 @@ If there are 10 line items return 10 objects in the lines array.`;
       showToast("Extraction complete!");
     } catch(err) {
       console.error("Extraction failed:", err);
-      await supabase.from("documents").update({ status:"Error" }).eq("id",doc.id);
-      updateDoc(doc.id, { status:"Error" });
-      if (reviewDoc?.id===doc.id) setReviewDoc(r => ({ ...r, status:"Error" }));
-      showToast("Extraction failed: " + err.message, "error");
+      const errMsg = err.message||"Unknown error";
+      await supabase.from("documents").update({ status:"Error", extracted:{ error:errMsg } }).eq("id",doc.id);
+      updateDoc(doc.id, { status:"Error", extracted:{ error:errMsg } });
+      if (reviewDoc?.id===doc.id) setReviewDoc(r => ({ ...r, status:"Error", extracted:{ error:errMsg } }));
+      showToast("Extraction failed: " + errMsg, "error", 7000);
     }
   };
 
@@ -304,7 +305,8 @@ If there are 10 line items return 10 objects in the lines array.`;
         user_id:user.id, name:q.name, status:"Queued", uploaded_at:today,
         file_type:q.type, pages:1, lines:0, extracted:null,
         template_name:q.template!=="None"?q.template:null,
-        uploaded_by:profile?.name||user.email, file_path:filePath
+        uploaded_by:profile?.name||user.email, file_path:filePath,
+        file_size:q.file?.size||0
       }).select().single();
       if (doc) setDocs(d => [{ ...doc, uploaded:doc.uploaded_at, type:doc.file_type, uploadedBy:doc.uploaded_by }, ...d]);
     }
@@ -409,7 +411,7 @@ If there are 10 line items return 10 objects in the lines array.`;
 
   return (
     <div style={{ ...s.app, display:"flex", height:"100vh", overflow:"hidden" }}>
-      {toast && <div style={{ position:"fixed", top:20, right:20, zIndex:999, background:toast.type==="error"?COLORS.danger:toast.type==="info"?COLORS.info:COLORS.success, color:"#fff", padding:"10px 18px", borderRadius:10, fontSize:13, fontWeight:500 }}>{toast.msg}</div>}
+      {toast && <div style={{ position:"fixed", top:20, left:"50%", transform:"translateX(-50%)", zIndex:999, background:toast.type==="error"?COLORS.danger:toast.type==="info"?COLORS.info:COLORS.success, color:"#fff", padding:"10px 24px", borderRadius:10, fontSize:13, fontWeight:500, boxShadow:"0 4px 20px rgba(0,0,0,0.4)", whiteSpace:"nowrap", maxWidth:"80vw", textAlign:"center" }}>{toast.msg}</div>}
       <div style={s.sidebar}>
         <div style={s.logo}>⬡ InvoiceAI</div>
         <div style={{ flex:1, paddingTop:8 }}>
@@ -458,7 +460,7 @@ function LoginPage({ loginData, setLoginData, onLogin, onSignup, onReset, toast 
   const isSignup = loginData.mode==="signup";
   return (
     <div style={{ ...s.app, display:"flex", alignItems:"center", justifyContent:"center", minHeight:"100vh" }}>
-      {toast && <div style={{ position:"fixed", top:20, right:20, zIndex:999, background:toast.type==="error"?COLORS.danger:toast.type==="info"?COLORS.info:COLORS.success, color:"#fff", padding:"10px 18px", borderRadius:10, fontSize:13, fontWeight:500 }}>{toast.msg}</div>}
+      {toast && <div style={{ position:"fixed", top:20, left:"50%", transform:"translateX(-50%)", zIndex:999, background:toast.type==="error"?COLORS.danger:toast.type==="info"?COLORS.info:COLORS.success, color:"#fff", padding:"10px 24px", borderRadius:10, fontSize:13, fontWeight:500, boxShadow:"0 4px 20px rgba(0,0,0,0.4)", whiteSpace:"nowrap", maxWidth:"80vw", textAlign:"center" }}>{toast.msg}</div>}
       <div style={{ width:380 }}>
         <div style={{ textAlign:"center", marginBottom:"2rem" }}>
           <div style={{ fontSize:32, marginBottom:8 }}>⬡</div>
@@ -496,6 +498,8 @@ function DashboardPage({ docs, statusCounts, statusFilter, setStatusFilter, sear
   const bucketText = { Queued:"#93c5fd", Processing:"#fcd34d", "Need Review":"#fb923c", Reviewed:"#4ade80", Error:"#f87171" };
   const allSelected = docs.length>0 && docs.every(d=>selected.includes(d.id));
   const toggleAll   = () => allSelected ? setSelected(s=>s.filter(x=>!docs.map(d=>d.id).includes(x))) : setSelected(s=>[...new Set([...s,...docs.map(d=>d.id)])]);
+  const fmtSize     = b => !b?"-":b>1e6?`${(b/1e6).toFixed(1)}MB`:b>1e3?`${(b/1e3).toFixed(0)}KB`:`${b}B`;
+  const errorDocs   = docs.filter(d=>d.status==="Error"&&d.extracted?.error);
   const Th = ({ col, label, center }) => (
     <th style={{ padding:"10px 12px", textAlign:center?"center":"left", fontSize:12, color:COLORS.textMuted, fontWeight:500, cursor:"pointer", userSelect:"none", whiteSpace:"nowrap", borderBottom:`1px solid ${COLORS.border}` }} onClick={()=>onSort(col)}>
       {label}{sortCol===col?(sortDir==="asc"?" ↑":" ↓"):""}
@@ -503,6 +507,22 @@ function DashboardPage({ docs, statusCounts, statusFilter, setStatusFilter, sear
   );
   return (
     <div>
+      {/* Error reason banner */}
+      {errorDocs.length>0 && (
+        <div style={{ background:"#3b0000", border:"1px solid #dc2626", borderRadius:10, padding:"12px 16px", marginBottom:"1rem" }}>
+          <div style={{ fontSize:13, fontWeight:600, color:"#f87171", marginBottom:6 }}>⚠ Extraction Errors</div>
+          {errorDocs.map(d=>(
+            <div key={d.id} style={{ fontSize:12, color:"#fca5a5", marginBottom:4, display:"flex", gap:8 }}>
+              <span style={{ fontWeight:500, flexShrink:0 }}>{d.name}:</span>
+              <span style={{ color:"#fda4a4" }}>{d.extracted.error}</span>
+            </div>
+          ))}
+          <div style={{ fontSize:11, color:"#f87171", marginTop:8, opacity:0.8 }}>
+            Tip: Rate limit errors resolve by waiting 60 seconds and re-opening the document to re-extract. Large documents may need to be split into smaller files.
+          </div>
+        </div>
+      )}
+
       <div style={{ display:"grid", gridTemplateColumns:"repeat(5,1fr)", gap:12, marginBottom:"1.5rem" }}>
         {buckets.map(b => (
           <div key={b} style={{ ...s.card, cursor:"pointer", border:`1px solid ${statusFilter===b?bucketText[b]:COLORS.border}`, padding:"1rem", transition:"border-color 0.2s" }} onClick={()=>setStatusFilter(statusFilter===b?"All":b)}>
@@ -521,7 +541,7 @@ function DashboardPage({ docs, statusCounts, statusFilter, setStatusFilter, sear
           {selected.length>0 && (
             <div style={{ display:"flex", gap:8, marginLeft:"auto", alignItems:"center" }}>
               <span style={{ fontSize:13, color:COLORS.textMuted }}>{selected.length} selected</span>
-              <button style={s.btn("secondary")} onClick={()=>docs.filter(d=>selected.includes(d.id)&&d.extracted).forEach(d=>onExport(d))}>Export CSV</button>
+              <button style={s.btn("secondary")} onClick={()=>docs.filter(d=>selected.includes(d.id)&&d.extracted&&!d.extracted.error).forEach(d=>onExport(d))}>Export CSV</button>
               <button style={s.btn("danger")} onClick={onDeleteBulk}>Delete</button>
             </div>
           )}
@@ -539,8 +559,9 @@ function DashboardPage({ docs, statusCounts, statusFilter, setStatusFilter, sear
                 <Th col="status"     label="Status" />
                 <Th col="uploaded"   label="Uploaded" />
                 <Th col="type"       label="Type" />
-                <Th col="pages"      label="Pages"  center />
-                <Th col="lines"      label="Lines"  center />
+                <Th col="file_size"  label="Size" center />
+                <Th col="pages"      label="Pages" center />
+                <Th col="lines"      label="Lines" center />
                 <Th col="uploadedBy" label="Uploaded By" />
                 <th style={{ padding:"10px 12px", fontSize:12, color:COLORS.textMuted, borderBottom:`1px solid ${COLORS.border}` }}>Actions</th>
               </tr>
@@ -552,19 +573,25 @@ function DashboardPage({ docs, statusCounts, statusFilter, setStatusFilter, sear
                   onMouseEnter={e=>e.currentTarget.style.background=COLORS.bgCardHover}
                   onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
                   <td style={{ padding:"10px 12px" }} onClick={e=>e.stopPropagation()}><input type="checkbox" checked={selected.includes(d.id)} onChange={()=>setSelected(s=>s.includes(d.id)?s.filter(x=>x!==d.id):[...s,d.id])} /></td>
-                  <td style={{ padding:"10px 12px", fontSize:13, fontWeight:500, maxWidth:220, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
+                  <td style={{ padding:"10px 12px", fontSize:13, fontWeight:500, maxWidth:200, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
                     <span style={{ color:COLORS.accent }}>{d.name}</span>
                     {d.status==="Processing" && <span style={{ marginLeft:8, fontSize:11, color:COLORS.textMuted }}>extracting...</span>}
                   </td>
-                  <td style={{ padding:"10px 12px" }}><span style={s.statusBadge(d.status)}>{d.status}</span></td>
+                  <td style={{ padding:"10px 12px" }}>
+                    <div style={{ display:"flex", flexDirection:"column", gap:2 }}>
+                      <span style={s.statusBadge(d.status)}>{d.status}</span>
+                      {d.status==="Error"&&d.extracted?.error && <span style={{ fontSize:10, color:"#f87171", maxWidth:150, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }} title={d.extracted.error}>{d.extracted.error}</span>}
+                    </div>
+                  </td>
                   <td style={{ padding:"10px 12px", fontSize:13, color:COLORS.textMuted }}>{d.uploaded}</td>
                   <td style={{ padding:"10px 12px", fontSize:13, color:COLORS.textMuted }}>{d.type}</td>
+                  <td style={{ padding:"10px 12px", fontSize:13, color:COLORS.textMuted, textAlign:"center" }}>{fmtSize(d.file_size)}</td>
                   <td style={{ padding:"10px 12px", fontSize:13, color:COLORS.textMuted, textAlign:"center" }}>{d.pages}</td>
                   <td style={{ padding:"10px 12px", fontSize:13, color:COLORS.textMuted, textAlign:"center" }}>{d.lines||"—"}</td>
                   <td style={{ padding:"10px 12px", fontSize:13, color:COLORS.textMuted, whiteSpace:"nowrap" }}>{d.uploadedBy||"—"}</td>
                   <td style={{ padding:"10px 12px" }} onClick={e=>e.stopPropagation()}>
                     <div style={{ display:"flex", gap:6 }}>
-                      {d.extracted && <button style={{ ...s.btn("secondary"), padding:"4px 10px", fontSize:12 }} onClick={()=>onExport(d)}>CSV</button>}
+                      {d.extracted&&!d.extracted.error && <button style={{ ...s.btn("secondary"), padding:"4px 10px", fontSize:12 }} onClick={()=>onExport(d)}>CSV</button>}
                       <button style={{ ...s.btn("danger"), padding:"4px 10px", fontSize:12 }} onClick={()=>onDelete(d.id)}>Del</button>
                     </div>
                   </td>
