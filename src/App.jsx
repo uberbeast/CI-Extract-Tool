@@ -344,36 +344,55 @@ If there are 10 line items return 10 objects in the lines array.`;
     if (data) { setSavedTemplates(ts => [{ ...data, createdBy:data.created_by, createdAt:new Date(data.created_at).toLocaleDateString() }, ...ts]); showToast(`Template "${t.name}" saved!`); }
   };
 
-  const exportCSV = doc => {
-    const h = doc.extracted?.header || {};
-    const lines = doc.extracted?.lines || [];
-    const sellerName     = h.sellerName?.value     || "";
-    const sellerAddress  = h.sellerAddress?.value  || "";
-    const buyerName      = h.buyerName?.value      || "";
-    const buyerAddress   = h.buyerAddress?.value   || "";
-    const invoiceNumber  = h.invoiceNumber?.value  || "";
-    const invoiceTotal   = h.invoiceTotal?.value   || "";
-    const incoterm       = h.incoterm?.value       || "";
-    const totalWeight    = h.totalWeight?.value    || "";
-    const totalWeightUOM = h.totalWeightUOM?.value || "";
+  const exportCSV = (docs) => {
+    // Accept either a single doc or an array of docs
+    const docList = Array.isArray(docs) ? docs : [docs];
+    const validDocs = docList.filter(d => d.extracted && !d.extracted.error);
+    if (!validDocs.length) { showToast("No extracted data to export", "error"); return; }
+
     const headerCols = ["Seller Name","Seller Address","Buyer Name","Buyer Address","Invoice Number","Invoice Total","Incoterm","Total Weight","Total Weight UOM"];
     const lineCols   = ["Line#","PO Number","Part Number","Description","HS Code","Qty","Qty UOM","Unit Price","Currency","Total Line Price","Unit Weight","Total Line Weight","Weight UOM","Country of Origin"];
-    const rows = [
-      [...headerCols, ...lineCols],
-      ...lines.map(l => [
-        sellerName,sellerAddress,buyerName,buyerAddress,invoiceNumber,invoiceTotal,incoterm,totalWeight,totalWeightUOM,
-        l.lineNumber, l.poNumber?.value||"", l.partNumber?.value||"", l.description?.value||"",
-        l.hsCode?.value||"", l.quantity?.value||"", l.quantityUOM?.value||"",
-        l.unitPrice?.value||"", l.currency?.value||"", l.totalLine?.value||"",
-        l.unitWeight?.value||"", l.totalLineWeight?.value||"", l.weightUOM?.value||"", l.countryOfOrigin?.value||""
-      ])
-    ];
-    const csv = rows.map(r => r.map(v=>`"${String(v||"").replace(/"/g,'""')}"`).join(",")).join("\n");
-    const a = document.createElement("a");
-    a.href = "data:text/csv;charset=utf-8," + encodeURIComponent(csv);
-    a.download = doc.name.replace(/\.[^.]+$/,".csv");
+    const rows = [[...headerCols, ...lineCols]];
+
+    validDocs.forEach(doc => {
+      const h     = doc.extracted?.header || {};
+      const lines = doc.extracted?.lines  || [];
+      const sellerName     = h.sellerName?.value     || "";
+      const sellerAddress  = h.sellerAddress?.value  || "";
+      const buyerName      = h.buyerName?.value      || "";
+      const buyerAddress   = h.buyerAddress?.value   || "";
+      const invoiceNumber  = h.invoiceNumber?.value  || "";
+      const invoiceTotal   = h.invoiceTotal?.value   || "";
+      const incoterm       = h.incoterm?.value       || "";
+      const totalWeight    = h.totalWeight?.value    || "";
+      const totalWeightUOM = h.totalWeightUOM?.value || "";
+      lines.forEach(l => rows.push([
+        sellerName, sellerAddress, buyerName, buyerAddress,
+        invoiceNumber, invoiceTotal, incoterm, totalWeight, totalWeightUOM,
+        l.lineNumber,
+        l.poNumber?.value        || "",
+        l.partNumber?.value      || "",
+        l.description?.value     || "",
+        l.hsCode?.value          || "",
+        l.quantity?.value        || "",
+        l.quantityUOM?.value     || "",
+        l.unitPrice?.value       || "",
+        l.currency?.value        || "",
+        l.totalLine?.value       || "",
+        l.unitWeight?.value      || "",
+        l.totalLineWeight?.value || "",
+        l.weightUOM?.value       || "",
+        l.countryOfOrigin?.value || ""
+      ]));
+    });
+
+    const csv      = rows.map(r => r.map(v => `"${String(v||"").replace(/"/g,'""')}"`).join(",")).join("\n");
+    const filename = validDocs.length===1 ? validDocs[0].name.replace(/\.[^.]+$/,".csv") : `export_${validDocs.length}_documents.csv`;
+    const a        = document.createElement("a");
+    a.href         = "data:text/csv;charset=utf-8," + encodeURIComponent(csv);
+    a.download     = filename;
     a.click();
-    showToast("CSV exported!");
+    showToast(`Exported ${validDocs.length} document${validDocs.length>1?"s":""} (${rows.length-1} lines total)`);
   };
 
   const filteredDocs = docs.filter(d => {
@@ -541,7 +560,7 @@ function DashboardPage({ docs, statusCounts, statusFilter, setStatusFilter, sear
           {selected.length>0 && (
             <div style={{ display:"flex", gap:8, marginLeft:"auto", alignItems:"center" }}>
               <span style={{ fontSize:13, color:COLORS.textMuted }}>{selected.length} selected</span>
-              <button style={s.btn("secondary")} onClick={()=>docs.filter(d=>selected.includes(d.id)&&d.extracted&&!d.extracted.error).forEach(d=>onExport(d))}>Export CSV</button>
+              <button style={s.btn("secondary")} onClick={()=>exportCSV(docs.filter(d=>selected.includes(d.id)&&d.extracted&&!d.extracted.error))}>Export CSV</button>
               <button style={s.btn("danger")} onClick={onDeleteBulk}>Delete</button>
             </div>
           )}
