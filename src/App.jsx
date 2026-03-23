@@ -240,9 +240,24 @@ If there are 10 line items return 10 objects in the lines array.`;
       if (data.error) throw new Error(data.error);
       const txt = data.content?.map(x=>x.text||"").join("").trim();
       const parsed = JSON.parse(txt);
-      await supabase.from("documents").update({ status:"Need Review", extracted:parsed, lines:parsed.lines?.length||0 }).eq("id",doc.id);
-      updateDoc(doc.id, { status:"Need Review", extracted:parsed, lines:parsed.lines?.length||0 });
-      if (reviewDoc?.id===doc.id) setReviewDoc(r => ({ ...r, status:"Need Review", extracted:parsed, lines:parsed.lines?.length||0 }));
+
+      // Get real page count from PDF
+      let pageCount = 1;
+      if (pdfBase64) {
+        try {
+          if (!window.pdfjsLib) {
+            await new Promise((res,rej) => { const sc=document.createElement("script"); sc.src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"; sc.onload=res; sc.onerror=rej; document.head.appendChild(sc); });
+            window.pdfjsLib.GlobalWorkerOptions.workerSrc="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+          }
+          const bytes = Uint8Array.from(atob(pdfBase64), c=>c.charCodeAt(0));
+          const pdf = await window.pdfjsLib.getDocument({ data:bytes }).promise;
+          pageCount = pdf.numPages;
+        } catch(_) {}
+      }
+
+      await supabase.from("documents").update({ status:"Need Review", extracted:parsed, lines:parsed.lines?.length||0, pages:pageCount }).eq("id",doc.id);
+      updateDoc(doc.id, { status:"Need Review", extracted:parsed, lines:parsed.lines?.length||0, pages:pageCount });
+      if (reviewDoc?.id===doc.id) setReviewDoc(r => ({ ...r, status:"Need Review", extracted:parsed, lines:parsed.lines?.length||0, pages:pageCount }));
       showToast("Extraction complete!");
     } catch(err) {
       console.error("Extraction failed:", err);
@@ -299,12 +314,16 @@ If there are 10 line items return 10 objects in the lines array.`;
   };
 
   const deleteDoc = async id => {
+    const doc = docs.find(d => d.id===id);
+    if (doc?.file_path) await supabase.storage.from("documents").remove([doc.file_path]);
     await supabase.from("documents").delete().eq("id",id);
     setDocs(d => d.filter(x=>x.id!==id)); setSelected(s=>s.filter(x=>x!==id));
     showToast("Document deleted");
   };
 
   const deleteBulk = async () => {
+    const filePaths = docs.filter(d=>selected.includes(d.id)&&d.file_path).map(d=>d.file_path);
+    if (filePaths.length) await supabase.storage.from("documents").remove(filePaths);
     await supabase.from("documents").delete().in("id",selected);
     setDocs(d => d.filter(x=>!selected.includes(x.id))); setSelected([]);
     showToast("Documents deleted");
@@ -615,36 +634,75 @@ function UploadPage({ queue, setQueue, onFileSelect, onBegin, templates }) {
 
 // ─── LineItemsTable ───────────────────────────────────────────────────────────
 function LineItemsTable({ lFields, lines, activeField, setActiveField, setEditData }) {
-  const thBase = {
-    padding:"7px 10px", fontSize:11, fontWeight:600, textAlign:"left",
-    whiteSpace:"nowrap", borderBottom:"1px solid "+COLORS.border,
-    color:COLORS.textMuted, background:"#12141e", userSelect:"none"
+  const defaultWidths = { lineNum:40, poNumber:90, partNumber:90, description:160, hsCode:80, quantity:60, quantityUOM:70, unitPrice:80, currency:70, totalLine:90, unitWeight:70, totalLineWeight:90, weightUOM:70, countryOfOrigin:60, rowBtn:44 };
+  const [colWidths, setColWidths] = useState(defaultWidths);
+  const dragRef = useRef(null);
+
+  const startResize = (col, e) => {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startW = colWidths[col];
+    const onMove = mv => {
+      const newW = Math.max(40, startW + (mv.clientX - startX));
+      setColWidths(w => ({ ...w, [col]: newW }));
+    };
+    const onUp = () => { window.removeEventListener("mousemove", onMove); window.removeEventListener("mouseup", onUp); };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
   };
+
+  const thStyle = (w, isActive) => ({
+    padding:"6px 8px", fontSize:11, fontWeight:600, textAlign:"left",
+    whiteSpace:"nowrap", borderBottom:"1px solid "+COLORS.border,
+    color: isActive ? COLORS.accent : COLORS.textMuted,
+    background: isActive ? "rgba(108,99,255,0.15)" : "#12141e",
+    userSelect:"none", position:"relative", width:w, minWidth:w, maxWidth:w,
+    boxSizing:"border-box"
+  });
+
+  const resizeHandle = col => (
+    <div
+      style={{ position:"absolute", right:0, top:0, bottom:0, width:5, cursor:"col-resize", zIndex:1, background:"transparent" }}
+      onMouseDown={e => startResize(col, e)}
+      onClick={e => e.stopPropagation()}
+    />
+  );
+
   const tdInput = {
     background:"transparent", border:"none", color:COLORS.text,
     fontSize:12, width:"100%", outline:"none", padding:"2px 0",
-    fontFamily:"inherit", minWidth:60
+    fontFamily:"inherit"
   };
+
+  const colKeys = ["lineNum", ...lFields.map(f=>f[0]), "rowBtn"];
+
   return (
     <div style={{ overflowX:"auto" }}>
-      <table style={{ width:"100%", borderCollapse:"collapse", minWidth:900 }}>
+      <table style={{ borderCollapse:"collapse", tableLayout:"fixed", width: colKeys.reduce((a,k)=>a+(colWidths[k]||80),0) }}>
         <thead>
           <tr>
-            <th style={{ ...thBase, width:36 }}>#</th>
+            <th style={thStyle(colWidths.lineNum, false)}>
+              #
+              {resizeHandle("lineNum")}
+            </th>
             {lFields.map(f => {
               const fKey=f[0], fLabel=f[1];
               const isCol = activeField && activeField.section==="col" && activeField.key===fKey;
               return (
-                <th key={fKey} style={{ ...thBase, color:isCol?COLORS.accent:COLORS.textMuted, background:isCol?"rgba(108,99,255,0.15)":"#12141e" }}>
-                  <div style={{ display:"flex", alignItems:"center", gap:4 }}>
-                    {fLabel}
-                    <span title={"Select column: "+fLabel} style={{ cursor:"pointer", fontSize:11, color:isCol?"#6c63ff":COLORS.textMuted, opacity:0.8 }}
-                      onClick={()=>setActiveField(isCol?null:{ section:"col", key:fKey, label:fLabel+" (all rows)" })}>⬚</span>
+                <th key={fKey} style={thStyle(colWidths[fKey]||80, isCol)}>
+                  <div style={{ display:"flex", alignItems:"center", gap:3, paddingRight:8 }}>
+                    <span style={{ overflow:"hidden", textOverflow:"ellipsis" }}>{fLabel}</span>
+                    <span title={"Select column: "+fLabel} style={{ cursor:"pointer", fontSize:11, color:isCol?"#6c63ff":COLORS.textMuted, flexShrink:0 }}
+                      onClick={()=>setActiveField(isCol?null:{section:"col",key:fKey,label:fLabel+" (all rows)"})}>⬚</span>
                   </div>
+                  {resizeHandle(fKey)}
                 </th>
               );
             })}
-            <th style={{ ...thBase, textAlign:"center", width:48 }}>Row ⬚</th>
+            <th style={thStyle(colWidths.rowBtn, false)}>
+              ⬚
+              {resizeHandle("rowBtn")}
+            </th>
           </tr>
         </thead>
         <tbody>
@@ -652,25 +710,26 @@ function LineItemsTable({ lFields, lines, activeField, setActiveField, setEditDa
             const isRow = activeField && activeField.section==="line" && activeField.lineIdx===li;
             return (
               <tr key={li} style={{ borderBottom:"1px solid "+COLORS.border, background:isRow?"rgba(108,99,255,0.07)":"transparent" }}>
-                <td style={{ padding:"6px 10px", fontSize:12, color:COLORS.textMuted, verticalAlign:"middle" }}>{line.lineNumber}</td>
+                <td style={{ padding:"5px 8px", verticalAlign:"middle", width:colWidths.lineNum, maxWidth:colWidths.lineNum, overflow:"hidden", fontSize:12, color:COLORS.textMuted }}>{line.lineNumber}</td>
                 {lFields.map(f => {
                   const fKey=f[0];
                   const isCol  = activeField && activeField.section==="col" && activeField.key===fKey;
                   const conf   = line[fKey]?.confidence;
                   const confBg = conf==="high"?"rgba(5,46,22,0.5)":conf==="medium"?"rgba(69,26,3,0.5)":conf==="low"?"rgba(69,10,10,0.5)":"transparent";
+                  const w = colWidths[fKey]||80;
                   return (
-                    <td key={fKey} style={{ padding:"5px 8px", verticalAlign:"middle", background:isCol?"rgba(108,99,255,0.08)":confBg }}>
+                    <td key={fKey} style={{ padding:"5px 8px", verticalAlign:"middle", background:isCol?"rgba(108,99,255,0.08)":confBg, width:w, maxWidth:w, overflow:"hidden" }}>
                       <input style={tdInput} value={line[fKey]?.value||""} placeholder="—"
                         onChange={e => {
                           const val=e.target.value;
-                          setEditData(d => ({ ...d, lines:d.lines.map((l,i) => i!==li?l:{ ...l, [fKey]:{ value:val, confidence:l[fKey]?.confidence||"high" } }) }));
+                          setEditData(d=>({...d,lines:d.lines.map((l,i)=>i!==li?l:{...l,[fKey]:{value:val,confidence:l[fKey]?.confidence||"high"}})}));
                         }} />
                     </td>
                   );
                 })}
-                <td style={{ padding:"5px 10px", verticalAlign:"middle", textAlign:"center" }}>
-                  <span title={"Select row: Line "+(li+1)} style={{ fontSize:14, cursor:"pointer", color:isRow?"#6c63ff":COLORS.textMuted }}
-                    onClick={()=>setActiveField(isRow?null:{ section:"line", key:"_row", label:"Line "+(li+1)+" (all fields)", lineIdx:li })}>⬚</span>
+                <td style={{ padding:"5px 8px", verticalAlign:"middle", textAlign:"center", width:colWidths.rowBtn }}>
+                  <span title={"Select row: Line "+(li+1)} style={{ fontSize:13, cursor:"pointer", color:isRow?"#6c63ff":COLORS.textMuted }}
+                    onClick={()=>setActiveField(isRow?null:{section:"line",key:"_row",label:"Line "+(li+1)+" (all fields)",lineIdx:li})}>⬚</span>
                 </td>
               </tr>
             );
@@ -692,6 +751,7 @@ function ReviewPage({ doc, onBack, onMarkReviewed, onExport, onRunClaude, user, 
   const [pdfPage,setPdfPage]             = useState(1);
   const [pdfData,setPdfData]             = useState(null);
   const [pdfLoading,setPdfLoading]       = useState(false);
+  const [pdfPageCount,setPdfPageCount]   = useState(null);
   const [showSave,setShowSave]           = useState(false);
   const [showApply,setShowApply]         = useState(false);
   const [templateName,setTemplateName]   = useState("");
@@ -827,13 +887,7 @@ function ReviewPage({ doc, onBack, onMarkReviewed, onExport, onRunClaude, user, 
         <div style={{ flex:"0 0 50%", borderRight:`1px solid ${COLORS.border}`, background:"#0d0f18", display:"flex", flexDirection:"column", overflow:"hidden" }}>
           <div style={{ padding:"10px 14px", borderBottom:`1px solid ${COLORS.border}`, background:COLORS.bgCard, display:"flex", alignItems:"center", gap:10, flexWrap:"wrap" }}>
             <span style={{ fontSize:13, fontWeight:500 }}>Document</span>
-            {pdfData && (
-              <div style={{ display:"flex", alignItems:"center", gap:6, marginLeft:8 }}>
-                <button style={{ ...s.btn("ghost"), padding:"2px 8px", fontSize:12 }} onClick={()=>setPdfPage(p=>Math.max(1,p-1))}>‹</button>
-                <span style={{ fontSize:12, color:COLORS.textMuted }}>Page {pdfPage}</span>
-                <button style={{ ...s.btn("ghost"), padding:"2px 8px", fontSize:12 }} onClick={()=>setPdfPage(p=>p+1)}>›</button>
-              </div>
-            )}
+            {pdfPageCount && <span style={{ fontSize:12, color:COLORS.textMuted }}>{pdfPageCount} page{pdfPageCount>1?"s":""}</span>}
             <div style={{ display:"flex", gap:6, marginLeft:"auto" }}>
               {[["High","#4ade80","#052e16","#16a34a"],["Med","#fbbf24","#451a03","#d97706"],["Low","#f87171","#450a0a","#dc2626"]].map(x=>(
                 <span key={x[0]} style={{ fontSize:11, background:x[2], color:x[1], padding:"2px 8px", borderRadius:20, border:`1px solid ${x[3]}` }}>{x[0]}</span>
@@ -851,7 +905,7 @@ function ReviewPage({ doc, onBack, onMarkReviewed, onExport, onRunClaude, user, 
           <div ref={docRef} style={{ flex:1, position:"relative", cursor:activeField?"crosshair":"default", userSelect:"none", overflow:"auto" }}
             onMouseDown={onMouseDown} onMouseMove={onMouseMove} onMouseUp={onMouseUp}>
             {pdfData ? (
-              <PdfViewer pdfData={pdfData} pageNum={pdfPage} canvasRef={canvasRef} />
+              <PdfViewer pdfData={pdfData} onPagesLoaded={n => setPdfPageCount(n)} />
             ) : pdfLoading ? (
               <div style={{ display:"flex", alignItems:"center", justifyContent:"center", height:"100%", color:COLORS.textMuted, fontSize:13 }}>Loading PDF...</div>
             ) : (
@@ -919,49 +973,72 @@ function ReviewPage({ doc, onBack, onMarkReviewed, onExport, onRunClaude, user, 
 }
 
 // ─── PdfViewer ────────────────────────────────────────────────────────────────
-function PdfViewer({ pdfData, pageNum, canvasRef }) {
-  const canvasEl  = useRef();
-  const renderRef = useRef(null);
-  const [loading,setLoading] = useState(true);
-  const [error,setError]     = useState(null);
+function PdfViewer({ pdfData, onPagesLoaded }) {
+  const containerRef = useRef();
+  const [numPages, setNumPages] = useState(0);
+  const [loading, setLoading]   = useState(true);
+  const [error, setError]       = useState(null);
+  const renderQueue = useRef([]);
 
   useEffect(() => {
     if (!pdfData) return;
     let cancelled = false;
     setLoading(true); setError(null);
+
     const load = async () => {
       try {
         if (!window.pdfjsLib) {
-          await new Promise((res,rej) => { const sc=document.createElement("script"); sc.src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"; sc.onload=res; sc.onerror=rej; document.head.appendChild(sc); });
+          await new Promise((res,rej) => {
+            const sc = document.createElement("script");
+            sc.src = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js";
+            sc.onload=res; sc.onerror=rej; document.head.appendChild(sc);
+          });
           window.pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
         }
         const bytes = pdfData instanceof ArrayBuffer ? new Uint8Array(pdfData) : pdfData;
         const pdf   = await window.pdfjsLib.getDocument({ data:bytes }).promise;
         if (cancelled) return;
-        const page  = await pdf.getPage(Math.min(pageNum, pdf.numPages));
-        if (cancelled) return;
-        const vp    = page.getViewport({ scale:1.5 });
-        const canvas= canvasEl.current;
-        if (!canvas) return;
-        canvas.width=vp.width; canvas.height=vp.height;
-        if (renderRef.current) renderRef.current.cancel();
-        renderRef.current = page.render({ canvasContext:canvas.getContext("2d"), viewport:vp });
-        await renderRef.current.promise;
-        if (!cancelled) setLoading(false);
+        const n = pdf.numPages;
+        setNumPages(n);
+        if (onPagesLoaded) onPagesLoaded(n);
+        setLoading(false);
+
+        // Render each page into its own canvas sequentially
+        for (let p=1; p<=n; p++) {
+          if (cancelled) break;
+          const page    = await pdf.getPage(p);
+          const vp      = page.getViewport({ scale:1.5 });
+          const canvas  = document.getElementById("pdf-page-"+p);
+          if (!canvas) continue;
+          canvas.width  = vp.width;
+          canvas.height = vp.height;
+          const task = page.render({ canvasContext:canvas.getContext("2d"), viewport:vp });
+          renderQueue.current.push(task);
+          await task.promise.catch(e => { if(e?.name!=="RenderingCancelledException") console.warn(e); });
+        }
       } catch(e) {
-        if (!cancelled && e?.name!=="RenderingCancelledException") setError(e.message);
-        if (!cancelled) setLoading(false);
+        if (!cancelled && e?.name!=="RenderingCancelledException") { setError(e.message); setLoading(false); }
       }
     };
     load();
-    return () => { cancelled=true; if(renderRef.current) renderRef.current.cancel(); };
-  }, [pdfData, pageNum]);
+    return () => {
+      cancelled = true;
+      renderQueue.current.forEach(t => { try { t.cancel(); } catch(_){} });
+      renderQueue.current = [];
+    };
+  }, [pdfData]);
+
+  if (loading) return <div style={{ display:"flex", alignItems:"center", justifyContent:"center", padding:"2rem", color:COLORS.textMuted, fontSize:13 }}>Rendering PDF...</div>;
+  if (error)   return <div style={{ padding:"1rem", color:"#f87171", fontSize:13 }}>Failed to render: {error}</div>;
 
   return (
-    <div style={{ position:"relative", minHeight:200 }}>
-      {loading && <div style={{ position:"absolute", inset:0, display:"flex", alignItems:"center", justifyContent:"center", color:COLORS.textMuted, fontSize:13 }}>Rendering PDF...</div>}
-      {error   && <div style={{ padding:"1rem", color:"#f87171", fontSize:13 }}>Failed to render: {error}</div>}
-      <canvas ref={canvasEl} style={{ width:"100%", display:loading?"none":"block" }} />
+    <div ref={containerRef} style={{ padding:"8px" }}>
+      {Array.from({ length:numPages }, (_,i) => (
+        <div key={i} style={{ marginBottom:8, border:"1px solid "+COLORS.border, borderRadius:4, overflow:"hidden" }}>
+          <div style={{ fontSize:10, color:COLORS.textMuted, padding:"3px 8px", background:"#12141e", borderBottom:"1px solid "+COLORS.border }}>Page {i+1} of {numPages}</div>
+          <canvas id={"pdf-page-"+(i+1)} style={{ width:"100%", display:"block" }} />
+        </div>
+      ))}
     </div>
   );
 }
