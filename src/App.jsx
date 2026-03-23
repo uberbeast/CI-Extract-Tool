@@ -215,50 +215,131 @@ If there are 10 line items return 10 objects in the lines array.`;
     updateDoc(doc.id, { status:"Processing" });
     if (reviewDoc?.id===doc.id) setReviewDoc(r => ({ ...r, status:"Processing" }));
     const assignedTemplate = savedTemplates.find(t => t.name===doc.template_name) || null;
-    showToast(assignedTemplate ? `Extracting with template "${assignedTemplate.name}"...` : "Extracting document...", "info");
+
     try {
       const prompt = buildExtractionPrompt(doc, assignedTemplate);
+
+      // ── Step 1: Download PDF from storage ─────────────────────────────────
       let pdfBase64 = null;
       if (doc.file_path) {
-        const { data:fileData, error:fileError } = await supabase.storage.from("documents").download(doc.file_path);
+        const { data:fileData, error:fileError } = await supabase.storage
+          .from("documents").download(doc.file_path);
         if (!fileError && fileData) {
-          const arrayBuf = await fileData.arrayBuffer();
-          const bytes = new Uint8Array(arrayBuf);
+          const bytes = new Uint8Array(await fileData.arrayBuffer());
           let binary = "";
           const chunk = 8192;
-          for (let i=0; i<bytes.byteLength; i+=chunk) binary += String.fromCharCode(...bytes.subarray(i,i+chunk));
+          for (let i=0; i<bytes.byteLength; i+=chunk)
+            binary += String.fromCharCode(...bytes.subarray(i, i+chunk));
           pdfBase64 = btoa(binary);
         }
       }
+
+      // ── Step 2: Try Textract first ─────────────────────────────────────────
+      let textractData = null;
+      let usingTextract = false;
+      if (pdfBase64) {
+        showToast("Checking Textract availability...", "info");
+        try {
+          const txRes = await fetch("/api/textract", {
+            method: "POST",
+            headers: { "Content-Type":"application/json" },
+            body: JSON.stringify({ pdfBase64 })
+          });
+          const txData = await txRes.json();
+          if (txData?.available && txData.fullText) {
+            textractData  = txData;
+            usingTextract = true;
+            showToast("Textract OCR complete — extracting with Claude...", "info");
+
+            // Update page count from Textract
+            if (txData.pageCount > 1) {
+              await supabase.from("documents").update({ pages:txData.pageCount }).eq("id",doc.id);
+              updateDoc(doc.id, { pages:txData.pageCount });
+            }
+          } else {
+            showToast("Textract not configured — using Claude PDF extraction...", "info");
+          }
+        } catch(txErr) {
+          console.warn("Textract unavailable, falling back to Claude:", txErr.message);
+          showToast("Textract unavailable — falling back to Claude...", "info");
+        }
+      }
+
+      // ── Step 3: Claude extraction ──────────────────────────────────────────
       const res = await fetch("/api/extract", {
-        method:"POST",
-        headers:{ "Content-Type":"application/json" },
-        body: JSON.stringify({ prompt, pdfBase64 })
+        method: "POST",
+        headers: { "Content-Type":"application/json" },
+        body: JSON.stringify({
+          prompt,
+          pdfBase64: usingTextract ? null : pdfBase64, // Textract path skips raw PDF
+          textractData
+        })
       });
+
       if (!res.ok) throw new Error("API error " + res.status + ": " + await res.text());
       const data = await res.json();
       if (data.error) throw new Error(data.error);
-      const txt = data.content?.map(x=>x.text||"").join("").trim();
+      const txt    = data.content?.map(x=>x.text||"").join("").trim();
       const parsed = JSON.parse(txt);
 
-      // Get real page count from PDF
-      let pageCount = 1;
-      if (pdfBase64) {
+      // ── Step 4: Attach Textract bounding boxes to each extracted field ─────
+      if (usingTextract && textractData) {
+        const allLines  = textractData.textLines || [];
+        const kvPairs   = textractData.kvPairs   || [];
+
+        // Helper: find closest matching text in Textract results and return its bbox
+        const findBbox = (value) => {
+          if (!value) return null;
+          const val = value.toLowerCase().trim();
+          // Try kv pairs first
+          const kv = kvPairs.find(kv => kv.value?.toLowerCase().includes(val) || val.includes(kv.value?.toLowerCase()));
+          if (kv?.valueBbox) return kv.valueBbox;
+          // Fall back to text lines
+          const line = allLines.find(l => l.text.toLowerCase().includes(val) || val.includes(l.text.toLowerCase()));
+          return line?.bbox || null;
+        };
+
+        // Attach bboxes to header fields
+        if (parsed.header) {
+          Object.keys(parsed.header).forEach(key => {
+            const field = parsed.header[key];
+            if (field?.value) field.bbox = findBbox(field.value);
+          });
+        }
+        // Attach bboxes to line item fields
+        if (parsed.lines) {
+          parsed.lines.forEach(line => {
+            Object.keys(line).forEach(key => {
+              if (key==="lineNumber") return;
+              const field = line[key];
+              if (field?.value) field.bbox = findBbox(field.value);
+            });
+          });
+        }
+      }
+
+      // ── Step 5: Get page count from PDF.js if not from Textract ───────────
+      let pageCount = doc.pages || 1;
+      if (!usingTextract && pdfBase64) {
         try {
           if (!window.pdfjsLib) {
             await new Promise((res,rej) => { const sc=document.createElement("script"); sc.src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"; sc.onload=res; sc.onerror=rej; document.head.appendChild(sc); });
             window.pdfjsLib.GlobalWorkerOptions.workerSrc="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
           }
           const bytes = Uint8Array.from(atob(pdfBase64), c=>c.charCodeAt(0));
-          const pdf = await window.pdfjsLib.getDocument({ data:bytes }).promise;
-          pageCount = pdf.numPages;
+          const pdf   = await window.pdfjsLib.getDocument({ data:bytes }).promise;
+          pageCount   = pdf.numPages;
         } catch(_) {}
       }
 
-      await supabase.from("documents").update({ status:"Need Review", extracted:parsed, lines:parsed.lines?.length||0, pages:pageCount }).eq("id",doc.id);
+      await supabase.from("documents").update({
+        status:"Need Review", extracted:parsed,
+        lines:parsed.lines?.length||0, pages:pageCount
+      }).eq("id",doc.id);
       updateDoc(doc.id, { status:"Need Review", extracted:parsed, lines:parsed.lines?.length||0, pages:pageCount });
       if (reviewDoc?.id===doc.id) setReviewDoc(r => ({ ...r, status:"Need Review", extracted:parsed, lines:parsed.lines?.length||0, pages:pageCount }));
-      showToast("Extraction complete!");
+      showToast(usingTextract ? "Extraction complete (Textract + Claude)" : "Extraction complete (Claude)");
+
     } catch(err) {
       console.error("Extraction failed:", err);
       const errMsg = err.message||"Unknown error";
@@ -1170,9 +1251,19 @@ function AdminPage({ profile, supabase, lists, setLists, showToast }) {
 
 // ─── Settings ─────────────────────────────────────────────────────────────────
 function SettingsPage({ profile, setProfile, supabase, showToast }) {
-  const [name,setName] = useState(profile?.name||"");
+  const [name,setName]                   = useState(profile?.name||"");
+  const [textractStatus,setTextractStatus] = useState(null);
+
+  useEffect(() => {
+    // Check if Textract is configured server-side
+    fetch("/api/textract", { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({pdfBase64:null}) })
+      .then(r=>r.json())
+      .then(d => setTextractStatus(d.available ? "configured" : "not_configured"))
+      .catch(() => setTextractStatus("not_configured"));
+  }, []);
+
   return (
-    <div style={{ maxWidth:540, display:"flex", flexDirection:"column", gap:16 }}>
+    <div style={{ maxWidth:560, display:"flex", flexDirection:"column", gap:16 }}>
       <div style={s.card}>
         <div style={{ fontSize:15, fontWeight:600, marginBottom:16 }}>Profile</div>
         <div style={{ marginBottom:12 }}>
@@ -1181,14 +1272,53 @@ function SettingsPage({ profile, setProfile, supabase, showToast }) {
         </div>
         <button style={s.btn()} onClick={async()=>{ await supabase.from("profiles").update({name}).eq("id",profile.id); setProfile(p=>({...p,name})); showToast("Profile updated!"); }}>Save Changes</button>
       </div>
+
+      <div style={s.card}>
+        <div style={{ fontSize:15, fontWeight:600, marginBottom:4 }}>Extraction Engine</div>
+        <div style={{ fontSize:13, color:COLORS.textMuted, marginBottom:16, lineHeight:1.6 }}>
+          When AWS Textract is configured, documents are first processed with Textract for OCR and bounding box coordinates, then Claude uses that structured output for field extraction. If Textract is not configured, Claude reads the PDF directly.
+        </div>
+        <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
+          <div style={{ ...s.card, padding:"1rem", display:"flex", alignItems:"center", gap:12 }}>
+            <div style={{ width:10, height:10, borderRadius:"50%", background:COLORS.success, flexShrink:0 }} />
+            <div style={{ flex:1 }}>
+              <div style={{ fontSize:13, fontWeight:500 }}>Claude (Anthropic)</div>
+              <div style={{ fontSize:12, color:COLORS.textMuted }}>PDF extraction — always active</div>
+            </div>
+            <span style={{ fontSize:12, color:COLORS.success }}>Active</span>
+          </div>
+          <div style={{ ...s.card, padding:"1rem", display:"flex", alignItems:"center", gap:12 }}>
+            <div style={{ width:10, height:10, borderRadius:"50%", background:textractStatus==="configured"?COLORS.success:COLORS.textMuted, flexShrink:0 }} />
+            <div style={{ flex:1 }}>
+              <div style={{ fontSize:13, fontWeight:500 }}>Amazon Textract (AWS)</div>
+              <div style={{ fontSize:12, color:COLORS.textMuted }}>OCR + bounding boxes — enhances Claude extraction</div>
+            </div>
+            <span style={{ fontSize:12, color:textractStatus==="configured"?COLORS.success:COLORS.textMuted }}>
+              {textractStatus===null?"Checking...":textractStatus==="configured"?"Active":"Not configured"}
+            </span>
+          </div>
+        </div>
+        {textractStatus==="not_configured" && (
+          <div style={{ marginTop:14, padding:"12px", background:"#0d0f18", borderRadius:8, fontSize:12, color:COLORS.textMuted, lineHeight:1.8 }}>
+            <strong style={{ color:COLORS.text, fontWeight:500 }}>To enable Textract:</strong><br/>
+            1. Create an AWS account at <span style={{ color:COLORS.accent }}>aws.amazon.com</span><br/>
+            2. Create an IAM user with <strong style={{ color:COLORS.text }}>AmazonTextractFullAccess</strong> policy<br/>
+            3. Generate an Access Key + Secret Key for that user<br/>
+            4. In Vercel → Settings → Environment Variables, add:<br/>
+            <code style={{ background:"#1a1d27", padding:"2px 6px", borderRadius:4, marginTop:4, display:"inline-block" }}>AWS_ACCESS_KEY_ID</code><br/>
+            <code style={{ background:"#1a1d27", padding:"2px 6px", borderRadius:4 }}>AWS_SECRET_ACCESS_KEY</code><br/>
+            <code style={{ background:"#1a1d27", padding:"2px 6px", borderRadius:4 }}>AWS_REGION</code> (e.g. us-east-1)<br/>
+            5. Redeploy from the Vercel dashboard
+          </div>
+        )}
+      </div>
+
       <div style={s.card}>
         <div style={{ fontSize:15, fontWeight:600, marginBottom:12 }}>How extraction works</div>
         <div style={{ fontSize:13, color:COLORS.textMuted, lineHeight:1.8 }}>
-          <strong style={{ color:COLORS.text, fontWeight:500 }}>1. Upload</strong> — Select documents. Up to 2 process simultaneously; the rest queue.<br/>
-          <strong style={{ color:COLORS.text, fontWeight:500 }}>2. Extract</strong> — Claude reads the PDF via the secure server-side proxy and returns all header and line fields with confidence scores.<br/>
-          <strong style={{ color:COLORS.text, fontWeight:500 }}>3. Review</strong> — Edit any field inline. Fields are color-coded by confidence.<br/>
-          <strong style={{ color:COLORS.text, fontWeight:500 }}>4. Export</strong> — Download a CSV with header fields repeated on every line row.<br/>
-          <strong style={{ color:COLORS.text, fontWeight:500 }}>5. Templates</strong> — Save reviewed documents as templates to guide future extractions.
+          <strong style={{ color:COLORS.text, fontWeight:500 }}>With Textract:</strong> Textract runs OCR → returns text + bounding box coordinates per field → Claude extracts structured data from the text. Hover over any extracted field to see it highlighted on the document.<br/><br/>
+          <strong style={{ color:COLORS.text, fontWeight:500 }}>Without Textract:</strong> Claude reads the raw PDF directly and extracts all fields. Works well for digital PDFs. Scanned documents benefit more from Textract.<br/><br/>
+          <strong style={{ color:COLORS.text, fontWeight:500 }}>Templates:</strong> Save reviewed documents as templates to give Claude field location hints for future extractions from the same supplier.
         </div>
       </div>
     </div>
