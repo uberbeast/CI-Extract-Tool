@@ -560,7 +560,7 @@ function DashboardPage({ docs, statusCounts, statusFilter, setStatusFilter, sear
           {selected.length>0 && (
             <div style={{ display:"flex", gap:8, marginLeft:"auto", alignItems:"center" }}>
               <span style={{ fontSize:13, color:COLORS.textMuted }}>{selected.length} selected</span>
-              <button style={s.btn("secondary")} onClick={()=>exportCSV(docs.filter(d=>selected.includes(d.id)&&d.extracted&&!d.extracted.error))}>Export CSV</button>
+              <button style={s.btn("secondary")} onClick={()=>onExport(docs.filter(d=>selected.includes(d.id)&&d.extracted&&!d.extracted.error))}>Export CSV</button>
               <button style={s.btn("danger")} onClick={onDeleteBulk}>Delete</button>
             </div>
           )}
@@ -610,7 +610,7 @@ function DashboardPage({ docs, statusCounts, statusFilter, setStatusFilter, sear
                   <td style={{ padding:"10px 12px", fontSize:13, color:COLORS.textMuted, whiteSpace:"nowrap" }}>{d.uploadedBy||"—"}</td>
                   <td style={{ padding:"10px 12px" }} onClick={e=>e.stopPropagation()}>
                     <div style={{ display:"flex", gap:6 }}>
-                      {d.extracted&&!d.extracted.error && <button style={{ ...s.btn("secondary"), padding:"4px 10px", fontSize:12 }} onClick={()=>onExport(d)}>CSV</button>}
+                      {d.extracted&&!d.extracted.error && <button style={{ ...s.btn("secondary"), padding:"4px 10px", fontSize:12 }} onClick={()=>onExport([d])}>CSV</button>}
                       <button style={{ ...s.btn("danger"), padding:"4px 10px", fontSize:12 }} onClick={()=>onDelete(d.id)}>Del</button>
                     </div>
                   </td>
@@ -876,7 +876,7 @@ function ReviewPage({ doc, onBack, onMarkReviewed, onExport, onRunClaude, user, 
         {doc.status!=="Reviewed" && <button style={s.btn("secondary")} onClick={()=>onRunClaude(doc)}>⚡ Re-extract</button>}
         {doc.extracted && <button style={s.btn("secondary")} onClick={()=>setShowApply(true)}>Apply Template</button>}
         {doc.extracted && <button style={s.btn("secondary")} onClick={()=>{setTemplateName("");setShowSave(true);}}>Save as Template</button>}
-        {doc.extracted && <button style={s.btn("secondary")} onClick={()=>onExport(doc)}>Export CSV</button>}
+        {doc.extracted && <button style={s.btn("secondary")} onClick={()=>onExport([doc])}>Export CSV</button>}
         {doc.status!=="Reviewed" && doc.extracted && <button style={{ ...s.btn(), background:"#14532d", color:"#86efac" }} onClick={()=>onMarkReviewed(doc)}>✓ Mark Reviewed</button>}
         {doc.status==="Reviewed" && <span style={{ fontSize:13, color:COLORS.success }}>✓ Reviewed by {doc.reviewer}</span>}
       </div>
