@@ -249,7 +249,12 @@ If there are 10 line items return 10 objects in the lines array.`;
       const res=await fetch("/api/extract",{
         method:"POST",
         headers:{"Content-Type":"application/json"},
-        body:JSON.stringify({prompt,pdfBase64:usingTextract?null:pdfBase64,textractData})
+        body:JSON.stringify({
+          prompt,
+          pdfBase64: usingTextract ? null : pdfBase64,
+          fileType: (doc.file_type || doc.type || "pdf").toLowerCase(),
+          textractData
+        })
       });
       if(!res.ok) throw new Error("API error "+res.status+": "+await res.text());
       const data=await res.json();
@@ -615,8 +620,8 @@ function UploadPage({queue,setQueue,onFileSelect,onBegin,templates}){
         onDrop={onDrop} onClick={()=>fileRef.current.click()}>
         <div style={{fontSize:32,marginBottom:12}}>☁</div>
         <div style={{fontSize:16,fontWeight:500,marginBottom:6}}>Drop files here or click to browse</div>
-        <div style={{fontSize:13,color:COLORS.textMuted}}>PDF, Excel, Word — single or bulk upload</div>
-        <input ref={fileRef} type="file" multiple accept=".pdf,.xlsx,.xls,.docx,.doc" style={{display:"none"}} onChange={onFileSelect}/>
+        <div style={{fontSize:13,color:COLORS.textMuted}}>PDF, Excel, Word, JPG, PNG, TIFF — single or bulk upload</div>
+        <input ref={fileRef} type="file" multiple accept=".pdf,.xlsx,.xls,.docx,.doc,.jpg,.jpeg,.png,.tif,.tiff,.gif,.webp" style={{display:"none"}} onChange={onFileSelect}/>
       </div>
       {queue.length>0&&(
         <div style={{marginTop:"1.5rem"}}>

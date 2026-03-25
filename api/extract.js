@@ -1,6 +1,18 @@
 import mammoth from "mammoth";
 import * as XLSX from "xlsx";
 
+// Map file extensions to Claude-accepted image media types
+const IMAGE_TYPES = {
+  jpg:  "image/jpeg",
+  jpeg: "image/jpeg",
+  png:  "image/png",
+  gif:  "image/gif",
+  webp: "image/webp",
+  tif:  "image/tiff",
+  tiff: "image/tiff",
+  bmp:  "image/png",   // convert BMP by sending as PNG fallback
+};
+
 export default async function handler(req, res) {
   if (req.method !== "POST")
     return res.status(405).json({ error: "Method not allowed" });
@@ -12,19 +24,18 @@ export default async function handler(req, res) {
     const { prompt, pdfBase64, fileType, textractData } = req.body;
 
     let messages;
+    const type = (fileType || "pdf").toLowerCase().replace(/^\./, "");
 
     if (textractData?.available && textractData.fullText) {
-      // ── Textract path: send pre-processed text to Claude ──────────────────
+      // ── Textract path ─────────────────────────────────────────────────────
       const tablesSummary = (textractData.tables || []).map((t, ti) => {
         const rows = {};
         t.cells.forEach(c => {
           if (!rows[c.rowIndex]) rows[c.rowIndex] = {};
           rows[c.rowIndex][c.colIndex] = c.text;
         });
-        const rowStrs = Object.values(rows)
-          .map(row => Object.values(row).join(" | "))
-          .join("\n");
-        return `Table ${ti + 1} (page ${t.page}):\n${rowStrs}`;
+        return `Table ${ti + 1} (page ${t.page}):\n` +
+          Object.values(rows).map(r => Object.values(r).join(" | ")).join("\n");
       }).join("\n\n");
 
       const kvSummary = (textractData.kvPairs || [])
@@ -32,20 +43,19 @@ export default async function handler(req, res) {
         .map(kv => `${kv.key}: ${kv.value}`)
         .join("\n");
 
-      const textractContext = [
+      const ctx = [
         "=== DOCUMENT TEXT (via AWS Textract OCR) ===",
         textractData.fullText,
-        kvSummary ? "\n=== KEY-VALUE PAIRS ===\n" + kvSummary : "",
+        kvSummary  ? "\n=== KEY-VALUE PAIRS ===\n"  + kvSummary  : "",
         tablesSummary ? "\n=== TABLES ===\n" + tablesSummary : "",
       ].filter(Boolean).join("\n");
 
-      messages = [{ role: "user", content: `${prompt}\n\n${textractContext}` }];
+      messages = [{ role: "user", content: `${prompt}\n\n${ctx}` }];
 
     } else if (pdfBase64) {
-      const type = (fileType || "pdf").toLowerCase();
 
       if (type === "pdf") {
-        // ── Native PDF — send as document block ───────────────────────────
+        // ── Native PDF ────────────────────────────────────────────────────
         messages = [{
           role: "user",
           content: [
@@ -54,8 +64,26 @@ export default async function handler(req, res) {
           ]
         }];
 
+      } else if (IMAGE_TYPES[type]) {
+        // ── Image (JPG, PNG, TIFF, GIF, WEBP) ────────────────────────────
+        // Claude vision reads the image natively — great for scanned invoices
+        messages = [{
+          role: "user",
+          content: [
+            {
+              type: "image",
+              source: {
+                type:       "base64",
+                media_type: IMAGE_TYPES[type],
+                data:       pdfBase64,
+              }
+            },
+            { type: "text", text: prompt }
+          ]
+        }];
+
       } else if (type === "docx" || type === "doc") {
-        // ── DOCX — extract text with mammoth, send as plain text ──────────
+        // ── Word document ─────────────────────────────────────────────────
         const buffer = Buffer.from(pdfBase64, "base64");
         let docText = "";
         try {
@@ -70,16 +98,14 @@ export default async function handler(req, res) {
         }];
 
       } else if (type === "xlsx" || type === "xls") {
-        // ── Excel — extract with SheetJS, format as tables ────────────────
+        // ── Excel spreadsheet ─────────────────────────────────────────────
         const buffer = Buffer.from(pdfBase64, "base64");
         let excelText = "";
         try {
-          const workbook = XLSX.read(buffer, { type: "buffer" });
-          excelText = workbook.SheetNames.map(sheetName => {
-            const sheet = workbook.Sheets[sheetName];
-            const rows  = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
-            const table = rows.map(row => row.join(" | ")).join("\n");
-            return `Sheet: ${sheetName}\n${table}`;
+          const wb = XLSX.read(buffer, { type: "buffer" });
+          excelText = wb.SheetNames.map(name => {
+            const rows = XLSX.utils.sheet_to_json(wb.Sheets[name], { header: 1, defval: "" });
+            return `Sheet: ${name}\n` + rows.map(r => r.join(" | ")).join("\n");
           }).join("\n\n");
         } catch (e) {
           excelText = "(Could not extract data from Excel file)";
@@ -90,12 +116,11 @@ export default async function handler(req, res) {
         }];
 
       } else {
-        // ── Unknown type — send as plain text prompt only ─────────────────
+        // ── Unknown type — text prompt only ───────────────────────────────
         messages = [{ role: "user", content: prompt }];
       }
 
     } else {
-      // ── No document provided ──────────────────────────────────────────────
       messages = [{ role: "user", content: prompt }];
     }
 
@@ -114,16 +139,12 @@ export default async function handler(req, res) {
     });
 
     if (response.status === 429) {
-      const retryAfter = response.headers.get("retry-after") || "60";
-      return res.status(429).json({
-        error: `Rate limit reached. Please wait ${retryAfter} seconds and try again.`
-      });
+      const retry = response.headers.get("retry-after") || "60";
+      return res.status(429).json({ error: `Rate limit reached. Please wait ${retry} seconds and try again.` });
     }
     if (!response.ok) {
       const errBody = await response.json().catch(() => ({}));
-      return res.status(response.status).json({
-        error: errBody?.error?.message || `HTTP ${response.status}`
-      });
+      return res.status(response.status).json({ error: errBody?.error?.message || `HTTP ${response.status}` });
     }
 
     const data = await response.json();
